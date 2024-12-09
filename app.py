@@ -1,34 +1,33 @@
 import cv2
 import mediapipe as mp
 import time
+import numpy as np
 
 mp_hands = mp.solutions.hands
 mp_drawing = mp.solutions.drawing_utils
 hands = mp_hands.Hands(static_image_mode=False, max_num_hands=1, min_detection_confidence=0.5)
 
-
-# - A top menu bar with a "Help" button that shows guidelines when activated.
-# - Buttons and scrollbars as before, but arranged more neatly.
-# - A sidebar for guidelines when the help is activated.
+# Enhanced UI Elements with more design and functionality
 elements = [
-    {"type": "menu", "x": 0, "y": 0, "width": 1280, "height": 50, "label": "Menu Bar"},
-    {"type": "button", "x": 50, "y": 100, "width": 200, "height": 50, "label": "Button A"},
-    {"type": "button", "x": 50, "y": 200, "width": 200, "height": 50, "label": "Button B"},
-    {"type": "button", "x": 50, "y": 300, "width": 200, "height": 50, "label": "Help"},
-    {"type": "scrollbar", "x": 300, "y": 100, "width": 400, "height": 20, "label": "Horizontal Scroll"},
-    {"type": "scrollbar", "x": 750, "y": 100, "width": 20, "height": 400, "label": "Vertical Scroll"},
+    {"type": "menu", "x": 0, "y": 0, "width": 1280, "height": 50, "label": "Gesture Control Interface", "color": (30, 40, 60)},
+    {"type": "button", "x": 50, "y": 100, "width": 250, "height": 70, "label": "Start Session", "color": (70, 100, 150)},
+    {"type": "button", "x": 50, "y": 200, "width": 250, "height": 70, "label": "Settings", "color": (70, 100, 150)},
+    {"type": "button", "x": 50, "y": 300, "width": 250, "height": 70, "label": "Help", "color": (70, 100, 150)},
+    {"type": "scrollbar", "x": 350, "y": 100, "width": 20, "height": 400, "label": "Vertical Scroll", "color": (50, 70, 100)},
+    {"type": "scrollbar", "x": 400, "y": 500, "width": 400, "height": 20, "label": "Horizontal Scroll", "color": (50, 70, 100)},
 ]
 
+# Configuration variables
 activation_time = 2.5
+hover_sensitivity = 0.035
+interaction_timeout = 3.0
+
+# State tracking variables
 hovered_element_label = None
 hover_start_time = None
 element_activated = False
-
-# Gesture detection thresholds and frames
-pinch_frames = 0
-pinch_frames_threshold = 5
-thumbs_up_frames = 0
-thumbs_up_frames_threshold = 5
+help_active = False
+current_mode = "Default"
 
 def is_pinching(hand_landmarks):
     if not hand_landmarks:
@@ -36,31 +35,29 @@ def is_pinching(hand_landmarks):
     thumb_tip = hand_landmarks.landmark[mp_hands.HandLandmark.THUMB_TIP]
     index_tip = hand_landmarks.landmark[mp_hands.HandLandmark.INDEX_FINGER_TIP]
     distance = ((thumb_tip.x - index_tip.x)**2 + (thumb_tip.y - index_tip.y)**2)**0.5
-    return distance < 0.035
+    return distance < hover_sensitivity
 
 def is_thumbs_up(hand_landmarks):
     if not hand_landmarks:
         return False
+
+    # More robust thumbs up detection
     thumb_tip = hand_landmarks.landmark[mp_hands.HandLandmark.THUMB_TIP]
     thumb_ip = hand_landmarks.landmark[mp_hands.HandLandmark.THUMB_IP]
+    
+    def is_finger_curled(tip, pip):
+        return tip.y > pip.y
 
-    index_tip = hand_landmarks.landmark[mp_hands.HandLandmark.INDEX_FINGER_TIP]
-    index_pip = hand_landmarks.landmark[mp_hands.HandLandmark.INDEX_FINGER_PIP]
-    middle_tip = hand_landmarks.landmark[mp_hands.HandLandmark.MIDDLE_FINGER_TIP]
-    middle_pip = hand_landmarks.landmark[mp_hands.HandLandmark.MIDDLE_FINGER_PIP]
-    ring_tip = hand_landmarks.landmark[mp_hands.HandLandmark.RING_FINGER_TIP]
-    ring_pip = hand_landmarks.landmark[mp_hands.HandLandmark.RING_FINGER_PIP]
-    pinky_tip = hand_landmarks.landmark[mp_hands.HandLandmark.PINKY_TIP]
-    pinky_pip = hand_landmarks.landmark[mp_hands.HandLandmark.PINKY_PIP]
-
-    vertical_offset = 0.02
-    thumb_extended = (thumb_tip.y + vertical_offset) < thumb_ip.y
-    index_curled = index_tip.y > (index_pip.y + vertical_offset)
-    middle_curled = middle_tip.y > (middle_pip.y + vertical_offset)
-    ring_curled = ring_tip.y > (ring_pip.y + vertical_offset)
-    pinky_curled = pinky_tip.y > (pinky_pip.y + vertical_offset)
-
-    return (thumb_extended and index_curled and middle_curled and ring_curled and pinky_curled)
+    return (
+        thumb_tip.y < thumb_ip.y and
+        all(is_finger_curled(hand_landmarks.landmark[tip], hand_landmarks.landmark[pip]) 
+            for tip, pip in [
+                (mp_hands.HandLandmark.INDEX_FINGER_TIP, mp_hands.HandLandmark.INDEX_FINGER_PIP),
+                (mp_hands.HandLandmark.MIDDLE_FINGER_TIP, mp_hands.HandLandmark.MIDDLE_FINGER_PIP),
+                (mp_hands.HandLandmark.RING_FINGER_TIP, mp_hands.HandLandmark.RING_FINGER_PIP),
+                (mp_hands.HandLandmark.PINKY_TIP, mp_hands.HandLandmark.PINKY_PIP)
+            ])
+    )
 
 def get_cursor_position(hand_landmarks, frame_width, frame_height):
     index_tip = hand_landmarks.landmark[mp_hands.HandLandmark.INDEX_FINGER_TIP]
@@ -74,142 +71,138 @@ def is_hovering(cursor_x, cursor_y, element):
         and element["y"] <= cursor_y <= element["y"] + element["height"]
     )
 
-cap = cv2.VideoCapture(0)
-cap.set(cv2.CAP_PROP_FRAME_WIDTH, 1280)
-cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 720)
-cap.set(cv2.CAP_PROP_FPS, 30)
+def draw_gradient_background(frame):
+    height, width = frame.shape[:2]
+    for y in range(height):
+        # Create a gradient from dark blue to lighter blue
+        r = int(20 + (y / height) * 50)
+        g = int(30 + (y / height) * 70)
+        b = int(50 + (y / height) * 100)
+        frame[y, :] = [b, g, r]
+    return frame
 
-help_active = False  # Whether the help/guidelines menu is active
+def main():
+    cap = cv2.VideoCapture(0)
+    cap.set(cv2.CAP_PROP_FRAME_WIDTH, 1280)
+    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 720)
+    cap.set(cv2.CAP_PROP_FPS, 30)
 
-while cap.isOpened():
-    ret, frame = cap.read()
-    if not ret:
-        break
+    global current_mode, help_active, hovered_element_label, hover_start_time, element_activated
 
-    frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-    results = hands.process(frame_rgb)
-    frame_height, frame_width, _ = frame.shape
+    while cap.isOpened():
+        ret, frame = cap.read()
+        if not ret:
+            break
 
-    hovered_now = None
+        # Apply gradient background
+        frame = draw_gradient_background(frame)
+        
+        frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+        results = hands.process(frame_rgb)
+        frame_height, frame_width, _ = frame.shape
 
-    if results.multi_hand_landmarks and len(results.multi_hand_landmarks) > 0:
-        for hand_landmarks in results.multi_hand_landmarks:
-            mp_drawing.draw_landmarks(frame, hand_landmarks, mp_hands.HAND_CONNECTIONS)
-            cursor_x, cursor_y = get_cursor_position(hand_landmarks, frame_width, frame_height)
+        current_time = time.time()
+        hovered_now = None
+        cursor_x, cursor_y = None, None
 
-            # Check Pinching first
-            if is_pinching(hand_landmarks):
-                pinch_frames += 1
-            else:
-                pinch_frames = 0
+        if results.multi_hand_landmarks and len(results.multi_hand_landmarks) > 0:
+            for hand_landmarks in results.multi_hand_landmarks:
+                mp_drawing.draw_landmarks(frame, hand_landmarks, mp_hands.HAND_CONNECTIONS)
+                cursor_x, cursor_y = get_cursor_position(hand_landmarks, frame_width, frame_height)
 
-            if pinch_frames > pinch_frames_threshold:
-                print("Pinching Gesture Detected: Interaction Triggered")
-                pinch_frames = 0
-                # Skip thumbs up check this iteration
-            else:
+                # Interaction detection
+                for element in elements:
+                    if is_hovering(cursor_x, cursor_y, element):
+                        hovered_now = element['label']
+                        break
+
+                # Gestures handling
                 if is_thumbs_up(hand_landmarks):
-                    thumbs_up_frames += 1
-                else:
-                    thumbs_up_frames = 0
+                    current_mode = "Thumbs Up Mode"
+                
+                if is_pinching(hand_landmarks):
+                    current_mode = "Pinch Mode"
 
-                if thumbs_up_frames > thumbs_up_frames_threshold:
-                    print("Thumbs Up Gesture Detected")
-                    thumbs_up_frames = 0
-
-            # Check hovering
-            for element in elements:
-                if is_hovering(cursor_x, cursor_y, element):
-                    hovered_now = element['label']
-                    break
-
+        # Hover and activation logic
         if hovered_now:
             if hovered_now != hovered_element_label:
                 hovered_element_label = hovered_now
-                hover_start_time = time.time()
+                hover_start_time = current_time
                 element_activated = False
             else:
-                elapsed = time.time() - hover_start_time
+                elapsed = current_time - hover_start_time
                 if elapsed >= activation_time and not element_activated:
                     print(f"Activated {hovered_element_label}")
                     element_activated = True
-                    # If Help is activated
                     if hovered_element_label == "Help":
-                        help_active = not help_active  # Toggle help menu
-        else:
-            hovered_element_label = None
-            hover_start_time = None
-            element_activated = False
-    else:
-        hovered_element_label = None
-        hover_start_time = None
-        element_activated = False
-        pinch_frames = 0
-        thumbs_up_frames = 0
+                        help_active = not help_active
 
-    # Draw UI elements
-    # Color scheme:
-    # Default: Blue (255,0,0)
-    # Hover (not activated yet): Red (0,0,255)
-    # Activated: Green (0,255,0)
-    for element in elements:
-        # Distinguish menu bar with a different color
-        if element['type'] == 'menu':
-            cv2.rectangle(frame, (element["x"], element["y"]),
+        # Draw UI elements with enhanced design
+        for element in elements:
+            # Semi-transparent background
+            overlay = frame.copy()
+            cv2.rectangle(overlay, (element["x"], element["y"]),
                           (element["x"] + element["width"], element["y"] + element["height"]),
-                          (50, 50, 50), -1)
-            cv2.putText(frame, element["label"], (element["x"] + 10, element["y"] + 30),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
-            continue
+                          element.get('color', (50, 50, 50)), -1)
+            
+            # Blending for depth
+            alpha = 0.5
+            frame = cv2.addWeighted(overlay, alpha, frame, 1 - alpha, 0)
 
-        color = (255, 0, 0)  # Blue default
-        if element['label'] == hovered_element_label:
-            if element_activated:
-                color = (0, 255, 0)  # Green when activated
-            else:
-                color = (0, 0, 255)  # Red when hovering but not yet activated
+            # Text rendering
+            color = (255, 255, 255)
+            if element['label'] == hovered_element_label:
+                color = (0, 255, 255)  # Highlight when hovered
+                if element_activated:
+                    color = (0, 255, 0)  # Green when activated
 
-        cv2.rectangle(frame, (element["x"], element["y"]),
-                      (element["x"] + element["width"], element["y"] + element["height"]),
-                      color, -1)
-        cv2.putText(frame, element["label"], (element["x"] + 10, element["y"] + element["height"] - 15),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 2)
+            cv2.putText(frame, element["label"], 
+                        (element["x"] + 10, element["y"] + element["height"] - 15),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.7, color, 2)
 
-    # If Help is active, draw a sidebar with guidelines
-    if help_active:
-        sidebar_x = 600
-        sidebar_y = 200
-        sidebar_w = 600
-        sidebar_h = 300
-        cv2.rectangle(frame, (sidebar_x, sidebar_y),
-                      (sidebar_x + sidebar_w, sidebar_y + sidebar_h),
-                      (30, 30, 30), -1)
-        cv2.putText(frame, "Guidelines:", (sidebar_x + 10, sidebar_y + 30),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255,255,255), 2)
-        cv2.putText(frame, "- Hover over a button for 2.5s to 'click' it.", (sidebar_x + 10, sidebar_y + 70),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255,255,255), 1)
-        cv2.putText(frame, "- Pinch gesture triggers an action after stable detection.", (sidebar_x + 10, sidebar_y + 100),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255,255,255), 1)
-        cv2.putText(frame, "- Thumbs Up gesture triggers another action.", (sidebar_x + 10, sidebar_y + 130),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255,255,255), 1)
-        cv2.putText(frame, "- Move finger over scrollbars to indicate scrolling direction.", (sidebar_x + 10, sidebar_y + 160),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255,255,255), 1)
-        cv2.putText(frame, "- Press 'q' to quit.", (sidebar_x + 10, sidebar_y + 190),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255,255,255), 1)
+        # Help sidebar with better design
+        if help_active:
+            sidebar_x, sidebar_y = 600, 100
+            sidebar_w, sidebar_h = 600, 400
+            
+            # Semi-transparent dark overlay
+            help_overlay = frame.copy()
+            cv2.rectangle(help_overlay, (sidebar_x, sidebar_y),
+                          (sidebar_x + sidebar_w, sidebar_y + sidebar_h),
+                          (20, 20, 40), -1)
+            frame = cv2.addWeighted(help_overlay, 0.7, frame, 0.3, 0)
 
-    # Draw cursor if hand is detected
-    if results.multi_hand_landmarks and len(results.multi_hand_landmarks) > 0:
-        cv2.circle(frame, (cursor_x, cursor_y), 10, (0, 255, 0), -1)
+            # Guidelines text
+            guidelines = [
+                "Interaction Guidelines:",
+                "• Hover over elements for 2.5s to activate",
+                "• Pinch gesture triggers contextual actions",
+                "• Thumbs Up changes interaction mode",
+                "• Green indicates element activation",
+                "• Press 'q' to quit application"
+            ]
 
-    # Instructions at bottom of screen (just text)
-    info_text = "Pinch to Interact | Thumbs Up for another action | Hover over Help for Guidelines"
-    cv2.putText(frame, info_text, (10, frame_height - 10),
-                cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
+            for i, line in enumerate(guidelines):
+                cv2.putText(frame, line, 
+                            (sidebar_x + 20, sidebar_y + 50 + i*40),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255,255,255), 2)
 
-    cv2.imshow("Gesture-Based Interaction with Menu & Guidelines", frame)
+        # Cursor visualization
+        if cursor_x is not None and cursor_y is not None:
+            cv2.circle(frame, (cursor_x, cursor_y), 15, (0, 255, 255), -1)
 
-    if cv2.waitKey(1) & 0xFF == ord('q'):
-        break
+        # Mode and info display
+        info_text = f"Mode: {current_mode} | Hover 2.5s to Activate"
+        cv2.putText(frame, info_text, (10, frame_height - 20),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
 
-cap.release()
-cv2.destroyAllWindows()
+        cv2.imshow("Gesture Control Interface", frame)
+
+        if cv2.waitKey(1) & 0xFF == ord('q'):
+            break
+
+    cap.release()
+    cv2.destroyAllWindows()
+
+if __name__ == "__main__":
+    main()
