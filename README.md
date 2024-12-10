@@ -85,7 +85,7 @@ This project is a gesture-controlled True/False quiz game built using **MediaPip
 ---
 
 ## **Video Demonstration**
-[Watch the Demo Video](https://github.com/serrayakupoglu/CS449_Assignment5)
+[Watch the Demo Video](https://youtu.be/FQ4HprACDko)
 
 ---
 
